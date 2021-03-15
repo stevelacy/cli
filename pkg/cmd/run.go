@@ -29,6 +29,7 @@ import (
 	"github.com/DopplerHQ/cli/pkg/controllers"
 	"github.com/DopplerHQ/cli/pkg/crypto"
 	"github.com/DopplerHQ/cli/pkg/http"
+	"github.com/DopplerHQ/cli/pkg/kube"
 	"github.com/DopplerHQ/cli/pkg/models"
 	"github.com/DopplerHQ/cli/pkg/utils"
 	"github.com/mattn/go-isatty"
@@ -37,6 +38,9 @@ import (
 )
 
 var defaultFallbackDir string
+var kubernetesFallbackPath = "~kube"
+var kubernetesSecretName = "doppler-kubernetes"
+var kubernetesNamespace = "default"
 
 const defaultFallbackFileMaxAge = 14 * 24 * time.Hour // 14 days
 
@@ -69,6 +73,7 @@ doppler run --command "YOUR_COMMAND && YOUR_OTHER_COMMAND"`,
 	Run: func(cmd *cobra.Command, args []string) {
 		enableFallback := !utils.GetBoolFlag(cmd, "no-fallback")
 		enableCache := enableFallback && !utils.GetBoolFlag(cmd, "no-cache")
+		enableKubernetesSecrets := utils.GetBoolFlag(cmd, "kubernetes-secrets-fallback")
 		fallbackReadonly := utils.GetBoolFlag(cmd, "fallback-readonly")
 		fallbackOnly := utils.GetBoolFlag(cmd, "fallback-only")
 		exitOnWriteFailure := !utils.GetBoolFlag(cmd, "no-exit-on-write-failure")
@@ -87,6 +92,15 @@ doppler run --command "YOUR_COMMAND && YOUR_OTHER_COMMAND"`,
 		if enableCache {
 			metadataPath = controllers.MetadataFilePath(localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value)
 		}
+		if enableKubernetesSecrets {
+			fallbackPath = kubernetesFallbackPath
+			if cmd.Flags().Changed("kubernetes-secret-name") {
+				kubernetesSecretName = cmd.Flag("kubernetes-secret-name").Value.String()
+			}
+			if cmd.Flags().Changed("kubernetes-namespace") {
+				kubernetesNamespace = cmd.Flag("kubernetes-namespace").Value.String()
+			}
+		}
 
 		passphrase := getPassphrase(cmd, "passphrase", localConfig)
 		if passphrase == "" {
@@ -102,7 +116,7 @@ doppler run --command "YOUR_COMMAND && YOUR_OTHER_COMMAND"`,
 			}
 		}
 
-		secrets := fetchSecrets(localConfig, enableCache, enableFallback, fallbackPath, legacyFallbackPath, metadataPath, fallbackReadonly, fallbackOnly, exitOnWriteFailure, passphrase)
+		secrets := fetchSecrets(localConfig, enableCache, enableFallback, fallbackPath, legacyFallbackPath, metadataPath, fallbackReadonly, fallbackOnly, exitOnWriteFailure, enableKubernetesSecrets, passphrase)
 
 		if preserveEnv {
 			utils.LogWarning("Ignoring Doppler secrets already defined in the environment due to --preserve-env flag")
@@ -238,7 +252,7 @@ var runCleanCmd = &cobra.Command{
 }
 
 // fetchSecrets fetches secrets, including all reading and writing of fallback files
-func fetchSecrets(localConfig models.ScopedOptions, enableCache bool, enableFallback bool, fallbackPath string, legacyFallbackPath string, metadataPath string, fallbackReadonly bool, fallbackOnly bool, exitOnWriteFailure bool, passphrase string) map[string]string {
+func fetchSecrets(localConfig models.ScopedOptions, enableCache bool, enableFallback bool, fallbackPath string, legacyFallbackPath string, metadataPath string, fallbackReadonly bool, fallbackOnly bool, exitOnWriteFailure bool, enableKubernetesSecrets bool, passphrase string) map[string]string {
 	if fallbackOnly {
 		if !enableFallback {
 			utils.HandleError(errors.New("Conflict: unable to specify --no-fallback with --fallback-only"))
@@ -298,39 +312,43 @@ func fetchSecrets(localConfig models.ScopedOptions, enableCache bool, enableFall
 			utils.HandleError(err, "Unable to encrypt your secrets. No fallback file has been written.")
 		}
 
-		utils.LogDebug(fmt.Sprintf("Writing to fallback file %s", fallbackPath))
-		if err := utils.WriteFile(fallbackPath, []byte(encryptedResponse), utils.RestrictedFilePerms()); err != nil {
-			utils.Log("Unable to write to fallback file")
-			if exitOnWriteFailure {
-				utils.HandleError(err, "", strings.Join(writeFailureMessage(), "\n"))
-			} else {
-				utils.LogDebugError(err)
-			}
-		}
-
-		// TODO remove this when releasing CLI v4 (DPLR-435)
-		if legacyFallbackPath != "" && localConfig.EnclaveProject.Value != "" && localConfig.EnclaveConfig.Value != "" {
-			utils.LogDebug(fmt.Sprintf("Writing to legacy fallback file %s", legacyFallbackPath))
-			if err := utils.WriteFile(legacyFallbackPath, []byte(encryptedResponse), utils.RestrictedFilePerms()); err != nil {
-				utils.Log("Unable to write to legacy fallback file")
+		if enableKubernetesSecrets {
+			kube.SyncKubeSecret(kubernetesSecretName, kubernetesNamespace, encryptedResponse)
+		} else {
+			utils.LogDebug(fmt.Sprintf("Writing to fallback file %s", fallbackPath))
+			if err := utils.WriteFile(fallbackPath, []byte(encryptedResponse), utils.RestrictedFilePerms()); err != nil {
+				utils.Log("Unable to write to fallback file")
 				if exitOnWriteFailure {
 					utils.HandleError(err, "", strings.Join(writeFailureMessage(), "\n"))
 				} else {
 					utils.LogDebugError(err)
 				}
 			}
-		}
 
-		if enableCache {
-			if etag := respHeaders.Get("etag"); etag != "" {
-				hash := crypto.Hash(encryptedResponse)
-
-				if err := controllers.WriteMetadataFile(metadataPath, etag, hash); !err.IsNil() {
-					utils.LogDebugError(err.Unwrap())
-					utils.LogDebug(err.Message)
+			// TODO remove this when releasing CLI v4 (DPLR-435)
+			if legacyFallbackPath != "" && localConfig.EnclaveProject.Value != "" && localConfig.EnclaveConfig.Value != "" {
+				utils.LogDebug(fmt.Sprintf("Writing to legacy fallback file %s", legacyFallbackPath))
+				if err := utils.WriteFile(legacyFallbackPath, []byte(encryptedResponse), utils.RestrictedFilePerms()); err != nil {
+					utils.Log("Unable to write to legacy fallback file")
+					if exitOnWriteFailure {
+						utils.HandleError(err, "", strings.Join(writeFailureMessage(), "\n"))
+					} else {
+						utils.LogDebugError(err)
+					}
 				}
-			} else {
-				utils.LogDebug("API response does not contain ETag")
+			}
+
+			if enableCache {
+				if etag := respHeaders.Get("etag"); etag != "" {
+					hash := crypto.Hash(encryptedResponse)
+
+					if err := controllers.WriteMetadataFile(metadataPath, etag, hash); !err.IsNil() {
+						utils.LogDebugError(err.Unwrap())
+						utils.LogDebug(err.Message)
+					}
+				} else {
+					utils.LogDebug("API response does not contain ETag")
+				}
 			}
 		}
 	}
@@ -366,24 +384,34 @@ func writeFailureMessage() []string {
 func readFallbackFile(path string, legacyPath string, passphrase string) map[string]string {
 	utils.Log("Reading secrets from fallback file")
 	utils.LogDebug(fmt.Sprintf("Using fallback file %s", path))
+	var response []byte
+	if path == kubernetesFallbackPath {
+		ks, err := kube.GetKubeSecret(kubernetesSecretName, kubernetesNamespace)
 
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			// attempt to read from the legacy path, in case the fallback file was created with an older version of the CLI
-			// TODO remove this when releasing CLI v4 (DPLR-435)
-			if legacyPath != "" {
-				return readFallbackFile(legacyPath, "", passphrase)
+		if err != nil {
+			utils.HandleError(errors.New("The kubernetes fallback secret does not exist"))
+		}
+		response = ks
+	} else {
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				// attempt to read from the legacy path, in case the fallback file was created with an older version of the CLI
+				// TODO remove this when releasing CLI v4 (DPLR-435)
+				if legacyPath != "" {
+					return readFallbackFile(legacyPath, "", passphrase)
+				}
+
+				utils.HandleError(errors.New("The fallback file does not exist"))
 			}
 
-			utils.HandleError(errors.New("The fallback file does not exist"))
+			utils.HandleError(err, "Unable to read fallback file")
 		}
 
-		utils.HandleError(err, "Unable to read fallback file")
-	}
-
-	response, err := ioutil.ReadFile(path) // #nosec G304
-	if err != nil {
-		utils.HandleError(err, "Unable to read fallback file")
+		res, err := ioutil.ReadFile(path) // #nosec G304
+		response = res
+		if err != nil {
+			utils.HandleError(err, "Unable to read fallback file")
+		}
 	}
 
 	utils.LogDebug("Decrypting fallback file")
@@ -539,11 +567,14 @@ func init() {
 	// TODO rename this to 'fallback-passphrase' in CLI v4 (DPLR-435)
 	runCmd.Flags().String("passphrase", "", "passphrase to use for encrypting the fallback file. the default passphrase is computed using your current configuration.")
 	runCmd.Flags().Bool("no-cache", false, "disable using the fallback file to speed up fetches. the fallback file is only used when the API indicates that it's still current.")
+	runCmd.Flags().Bool("kubernetes-secrets-fallback", false, "enable using kubernetes secrets as a fallback")
 	runCmd.Flags().Bool("no-fallback", false, "disable reading and writing the fallback file (implies --no-cache)")
 	runCmd.Flags().Bool("fallback-readonly", false, "disable modifying the fallback file. secrets can still be read from the file.")
 	runCmd.Flags().Bool("fallback-only", false, "read all secrets directly from the fallback file, without contacting Doppler. secrets will not be updated. (implies --fallback-readonly)")
 	runCmd.Flags().Bool("no-exit-on-write-failure", false, "do not exit if unable to write the fallback file")
 	runCmd.Flags().Bool("forward-signals", forwardSignals, "forward signals to the child process (defaults to false when STDOUT is a TTY)")
+	runCmd.Flags().StringP("kubernetes-secret-name", "", kubernetesSecretName, "kubernetes secret to store encrypted fallback values")
+	runCmd.Flags().StringP("kubernetes-namespace", "", kubernetesNamespace, "kubernetes namespace")
 
 	// deprecated
 	runCmd.Flags().Bool("silent-exit", false, "disable error output if the supplied command exits non-zero")

@@ -14,10 +14,12 @@ require (
 	github.com/mattn/go-runewidth v0.0.5 // indirect
 	github.com/skratchdot/open-golang v0.0.0-20190402232053-79abb63cd66e
 	github.com/spf13/cobra v0.0.5
-	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/zalando/go-keyring v0.1.1-0.20210112083600-4d37811583ad
 	go.mongodb.org/mongo-driver v1.1.2 // indirect
-	golang.org/x/crypto v0.0.0-20190530122614-20be4c3c3ed5
+	golang.org/x/crypto v0.0.0-20200220183623-bac4c82f6975
 	gopkg.in/gookit/color.v1 v1.1.6
 	gopkg.in/yaml.v3 v3.0.0-20191026110619-0b21df46bc1d
+	k8s.io/api v0.18.16
+	k8s.io/apimachinery v0.18.16
+	k8s.io/client-go v0.18.16
 )

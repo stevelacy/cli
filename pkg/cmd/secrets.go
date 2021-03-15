@@ -258,6 +258,7 @@ func downloadSecrets(cmd *cobra.Command, args []string) {
 	enableFallback := !utils.GetBoolFlag(cmd, "no-fallback")
 	enableCache := enableFallback && !utils.GetBoolFlag(cmd, "no-cache")
 	fallbackReadonly := utils.GetBoolFlag(cmd, "fallback-readonly")
+	enableKubernetesSecrets := utils.GetBoolFlag(cmd, "kubernetes-secrets-fallback")
 	fallbackOnly := utils.GetBoolFlag(cmd, "fallback-only")
 	exitOnWriteFailure := !utils.GetBoolFlag(cmd, "no-exit-on-write-failure")
 
@@ -301,7 +302,7 @@ func downloadSecrets(cmd *cobra.Command, args []string) {
 		if enableCache {
 			metadataPath = controllers.MetadataFilePath(localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value)
 		}
-		secrets := fetchSecrets(localConfig, enableCache, enableFallback, fallbackPath, legacyFallbackPath, metadataPath, fallbackReadonly, fallbackOnly, exitOnWriteFailure, fallbackPassphrase)
+		secrets := fetchSecrets(localConfig, enableCache, enableFallback, fallbackPath, legacyFallbackPath, metadataPath, fallbackReadonly, fallbackOnly, exitOnWriteFailure, enableKubernetesSecrets, fallbackPassphrase)
 
 		var err error
 		body, err = json.Marshal(secrets)
